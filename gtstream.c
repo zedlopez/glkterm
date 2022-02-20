@@ -346,6 +346,8 @@ strid_t glk_stream_open_file_uni(fileref_t *fref, glui32 fmode,
     glui32 rock)
 {
     strid_t str = glk_stream_open_file(fref, fmode, rock);
+    if (!str)
+        return NULL;
     /* Unlovely, but it works in this library */
     str->unicode = TRUE;
     return str;
@@ -621,7 +623,7 @@ glui32 glk_stream_get_position(stream_t *str)
             }
             else {
                 /* Use 4 here, rather than sizeof(glui32). */
-                return ftell(str->file) / 4;
+              return ftell(str->file) / 4; /* TODO: wrong for utf-8? */
             }
         case strtype_Window:
         default:
@@ -684,11 +686,17 @@ static void gli_put_char(stream_t *str, unsigned char ch)
                 putc(ch, str->file);
             }
             else {
-                /* cheap big-endian stream */
-                putc(0, str->file);
-                putc(0, str->file);
-                putc(0, str->file);
-                putc(ch, str->file);
+                if (!str->isbinary) {
+                    /* cheap UTF-8 stream */
+                    gli_putchar_utf8(ch, str->file);
+                }
+                else {
+                 /* cheap big-endian stream */
+                 putc(0, str->file);
+                 putc(0, str->file);
+                 putc(0, str->file);
+                 putc(ch, str->file);
+            }
             }
             break;
         case strtype_Resource:
@@ -744,11 +752,17 @@ static void gli_put_char_uni(stream_t *str, glui32 ch)
                 putc(ch, str->file);
             }
             else {
+              if (!str->isbinary) {
+                /* cheap UTF-8 stream */
+                gli_putchar_utf8(ch, str->file);
+              }
+              else {
                 /* cheap big-endian stream */
                 putc(((ch >> 24) & 0xFF), str->file);
                 putc(((ch >> 16) & 0xFF), str->file);
                 putc(((ch >>  8) & 0xFF), str->file);
                 putc( (ch        & 0xFF), str->file);
+              }
             }
             break;
         case strtype_Resource:
@@ -834,6 +848,12 @@ static void gli_put_buffer(stream_t *str, char *buf, glui32 len)
                 fwrite((unsigned char *)buf, 1, len, str->file);
             }
             else {
+                if (!str->isbinary) {
+                    /* cheap UTF-8 stream */
+                    for (lx=0; lx<len; lx++)
+                        gli_putchar_utf8(((unsigned char *)buf)[lx], str->file);
+                }
+                else {
                 /* cheap big-endian stream */
                 for (lx=0; lx<len; lx++) {
                     unsigned char ch = ((unsigned char *)buf)[lx];
@@ -842,6 +862,7 @@ static void gli_put_buffer(stream_t *str, char *buf, glui32 len)
                     putc(((ch >>  8) & 0xFF), str->file);
                     putc( (ch        & 0xFF), str->file);
                 }
+            }
             }
             break;
         case strtype_Resource:
@@ -1024,7 +1045,7 @@ static glsi32 gli_get_char(stream_t *str, int want_unicode)
                     return -1;
                 }
             }
-            else {
+            else if (str->isbinary) {
                 /* cheap big-endian stream */
                 int res;
                 glui32 ch;
@@ -1044,6 +1065,19 @@ static glsi32 gli_get_char(stream_t *str, int want_unicode)
                 if (res == -1)
                     return -1;
                 ch = (ch << 8) | (res & 0xFF);
+                str->readcount++;
+                if (!want_unicode && ch >= 0x100)
+                    return '?';
+                return (glsi32)ch;
+            }
+                        else {
+                /* slightly less cheap UTF-8 stream */
+                glui32 val0, val1, val2, val3;
+                int res;
+                glui32 ch;
+                int flag = UTF8_DECODE_INLINE(&ch, (res=getc(str->file), res == -1), (res & 0xFF), val0, val1, val2, val3);
+                if (!flag)
+                    return -1;
                 str->readcount++;
                 if (!want_unicode && ch >= 0x100)
                     return '?';
